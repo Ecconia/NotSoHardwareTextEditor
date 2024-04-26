@@ -1,0 +1,7 @@
+# Rust:
+/target/
+#Temporarily also ignore the lock file. As of now it is not important to include it into git.
+/Cargo.lock
+
+# JetBrains:
+/.idea/
