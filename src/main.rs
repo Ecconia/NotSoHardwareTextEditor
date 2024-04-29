@@ -6,7 +6,7 @@ use sdl2::keyboard::Keycode;
 use sdl2::pixels::Color;
 use sdl2::rect::{Point, Rect};
 use sdl2::render::WindowCanvas;
-use typewriter::config::{HEIGHT, PIXEL_SIDE, WIDTH};
+use typewriter::config::{HEIGHT, PIXEL_SIDE, TARGET_DISPLAY, WIDTH};
 use typewriter::font;
 use typewriter::font::Instruction;
 use typewriter::typewriter::{LetterInstruction, Typewriter};
@@ -22,14 +22,26 @@ pub fn main() -> Result<(), String> {
 	let sdl_context = sdl2::init()?;
 	let video_subsystem = sdl_context.video()?;
 	
-	let window = video_subsystem
+	let count = video_subsystem.num_video_displays().expect("Could not get amount of video displays.");
+	
+	const EFF_WIDTH: u32 = WIDTH * PIXEL_SIDE;
+	const EFF_HEIGHT: u32 = HEIGHT * PIXEL_SIDE;
+	let mut window_builder = video_subsystem
 		.window(
 			"Ecconia Maze Test",
-			WIDTH * PIXEL_SIDE,
-			HEIGHT * PIXEL_SIDE,
-		)
-		.position_centered()
-		.build()
+			EFF_WIDTH,
+			EFF_HEIGHT,
+		);
+	if count <= 1 || TARGET_DISPLAY > i32::MAX as u32 || TARGET_DISPLAY as i32 >= count {
+		window_builder.position_centered();
+	} else {
+		let rect = video_subsystem.display_bounds(TARGET_DISPLAY as i32).expect("Could not get display bounds.");
+		window_builder.position(
+			rect.x + (rect.w - EFF_WIDTH as i32) / 2,
+			rect.y + (rect.h - EFF_HEIGHT as i32) / 2
+		);
+	}
+	let window = window_builder.build()
 		.map_err(|e| e.to_string())?;
 	
 	let mut canvas = window
