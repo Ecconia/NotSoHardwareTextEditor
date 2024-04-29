@@ -86,7 +86,6 @@ pub fn main() -> Result<(), String> {
 					..
 				} => {
 					typewriter.handle_input(&scancode, &keymod, &mut letter_instructions, &font);
-					typewriter.dump_debug();
 				}
 				_ => {}
 			}
@@ -102,7 +101,8 @@ pub fn main() -> Result<(), String> {
 				for instruction in &letter_instructions {
 					let symbol = font.symbols_by_id.get(&instruction.id);
 					if symbol.is_none() {
-						panic!("Tried to draw letter that does not exist with ID: {}", instruction.id);
+						println!("VIOLATION: Tried to draw letter that does not exist with ID: {}", instruction.id);
+						continue;
 					}
 					draw_letter(texture_canvas, symbol.unwrap(), instruction.pos_x, instruction.pos_y);
 				}
@@ -115,7 +115,8 @@ pub fn main() -> Result<(), String> {
 		
 		//Draw cursor:
 		if cursor_time.elapsed().as_millis() % 1000 >= 500 {
-			draw_cursor(&mut canvas, typewriter.cursor.x, typewriter.cursor.y);
+			let (x, y) = typewriter.cursor.get_draw_cursor_position();
+			draw_cursor(&mut canvas, x, y);
 		}
 		
 		//Apply:

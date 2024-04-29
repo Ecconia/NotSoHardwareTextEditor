@@ -27,6 +27,15 @@ impl Default for Typewriter {
 	}
 }
 
+macro_rules! assert_false {
+	($falsey_condition:expr, $failure_message:expr) => {
+		if $falsey_condition {
+			println!($failure_message);
+			return;
+		}
+	};
+}
+
 impl Typewriter {
 	pub fn handle_input(
 		&mut self,
@@ -44,35 +53,29 @@ impl Typewriter {
 			}
 			
 			let letter = &typed_letter.unwrap();
-			//Add the letter to memory:
 			self.memory.insert(*font.ids_by_key.get(letter).unwrap());
-			//Now draw the letter:
-			
-			if self.cursor.is_at_end() {
-				println!(">>> AT END");
-				//Cursor is at the end of the display.
-				//While one could write to this position, afterwards a line-wrap would occur, overwriting the previous data.
-				
-				//Set the cursor to the beginning of the line, as it would end up there.
-				self.cursor.to_line_beginning();
-				//Then clear the now empty new line:
-				self.clear_from_cursor(letter_instructions);
-				// //Finally redraw the memory which is before the cursor:
-				self.update_line_cache(); //First create a line cache, to know where the last lines ends.
-				// // The last line ofc ends at the end of the display. But treat it like everything else and just redraw:
-				self.clear_above_cursor(letter_instructions);
-				self.redraw_before_cursor(letter_instructions);
-			} else {
-				//Cursor is at a valid position on the display, where we intend to write to.
-				
-				//Write to valid position, clear the position first:
+			//Only write a letter, when it visibly fits onto the canvas, else the move cursor redrawing logic will draw it.
+			if !self.cursor.is_at_canvas_end() {
 				self.write_space(letter_instructions);
 				self.write_letter_by_key(font, letter_instructions, letter);
-				//Cursor must now advance to the next position:
+			}
+			
+			if self.cursor.is_at_canvas_end() {
+				//First move the cursor to the start of the line:
+				self.cursor.to_line_beginning();
+				//Then clear basically the whole screen:
+				self.clear_above_cursor(letter_instructions);
+				self.clear_from_cursor(letter_instructions);
+				//Update the line cache (to know where to put the cursor) and redraw the screen:
+				self.update_line_cache();
+				self.redraw_before_cursor(letter_instructions);
+			} else {
 				self.cursor.increment();
 			}
 			
-			if !self.memory.cursor_at_end() && !self.cursor.is_at_end() {
+			//As we added a letter, there is always the demand to redraw things after the cursor,
+			// unless the cursor is at the end of the memory or at the end of canvas (stuff is out of bounds then):
+			if !self.memory.cursor_at_end() && !self.cursor.is_at_canvas_end() {
 				self.clear_from_cursor(letter_instructions);
 				self.clear_below_cursor(letter_instructions);
 				self.redraw_from_cursor(letter_instructions);
@@ -87,46 +90,72 @@ impl Typewriter {
 					return;
 				}
 				self.memory.delete_backwards();
-				let deleted_value = self.memory.memory[self.memory.pointer_before_cursor];
-				if deleted_value == NEWLINE {
-					//Clear the current line, as we are at the beginning of it and move the whole content up.
-					// It either redraws or whatever.
-					for x in 0..CHAR_WIDTH {
-						letter_instructions.push(LetterInstruction {
-							pos_x: x,
-							pos_y: self.cursor.y,
-							id: 0,
-						});
-					}
-					
-					let x_pos = self.find_line_end();
-					self.cursor.x = x_pos;
-					self.cursor.to_previous_line();
-				} else {
-					self.cursor.decrement();
-				}
-				
-				if !self.memory.cursor_at_end() {
-					self.redraw_from_cursor(letter_instructions);
-				} else {
+				//When we remove a character, it has to be replaced with an empty space (whitespace).
+				//That has to be manually drawn here, but:
+				// - If the cursor is in column 0, a (invisible) newline will be deleted.
+				// - If there is text after the cursor, the cursor movement code redraws that bit anyway.
+				//The cursor movement logic, should not be bothered/polluted with non-redrawing display changes.
+				if self.memory.cursor_at_end() && self.cursor.x != 0 {
+					self.cursor.x -= 1;
 					self.write_space(letter_instructions);
+					self.cursor.x += 1;
 				}
+				//Now after the action performed, move the cursor back properly:
+				self.move_cursor_back(letter_instructions, true);
 			}
 			Scancode::Left => {
 				if self.memory.cursor_at_beginning() {
 					//TODO: Bell.
 					return;
 				}
-				self.cursor.decrement();
 				self.memory.move_after_cursor();
+				self.move_cursor_back(letter_instructions, false);
 			}
 			Scancode::Right => {
 				if self.memory.cursor_at_end() {
 					//TODO: Bell.
 					return;
 				}
-				self.cursor.increment();
 				self.memory.move_before_cursor();
+				
+				let mut scroll_into_next_line = false;
+				if self.memory.memory[self.memory.pointer_after_cursor] == NEWLINE {
+					//We skipped a newline while going forward, thus we need to go to the next line:
+					if self.cursor.is_last_line() {
+						//We are in the last line, scroll all content up:
+						scroll_into_next_line = true;
+					} else {
+						//We are somewhere, just move cursor down one row:
+						self.cursor.to_line_beginning(); //First go to start of the "next" line.
+						self.cursor.to_next_line();
+					}
+				} else {
+					//We did not encounter a newline, means we advance the cursor:
+					if self.cursor.is_at_canvas_end() {
+						//We are at the end of the canvas, we cannot advance the cursor, scroll up to next line.
+						scroll_into_next_line = true;
+					} else {
+						//Will take care of all other cases:
+						self.cursor.increment();
+					}
+				}
+				
+				//Code to move all content up one line:
+				if scroll_into_next_line {
+					//First move the cursor to the start of the line:
+					self.cursor.to_line_beginning();
+					//Then clear basically the whole screen:
+					self.clear_above_cursor(letter_instructions);
+					self.clear_from_cursor(letter_instructions);
+					//Update the line cache (to know where to put the cursor) and redraw the screen:
+					self.update_line_cache();
+					self.redraw_before_cursor(letter_instructions);
+					
+					//In case that there was text after the cursor redraw that as well:
+					if !self.memory.cursor_at_end() {
+						self.redraw_from_cursor(letter_instructions);
+					}
+				}
 			}
 			Scancode::Return => {
 				if self.memory.memory_full() {
@@ -142,25 +171,26 @@ impl Typewriter {
 					
 					//Move cursor to the beginning of the line, as a new line starts now:
 					self.cursor.to_line_beginning();
-					
-					self.update_line_cache();
+					//Clear everything above the cursor
 					self.clear_above_cursor(letter_instructions);
+					//Draw everything before the cursor:
+					self.update_line_cache();
 					self.redraw_before_cursor(letter_instructions);
+					
+					//Clear everything after the cursor (chances are high, this is mandatory - except when cursor was in first column):
+					self.clear_from_cursor(letter_instructions);
 				} else {
 					//Not at the end of display, just use the next line!
 					
 					//Remove from cursor to the rest of the line, in case that the cursor is not at the end of the line:
-					self.clear_from_cursor(letter_instructions);
-					//Move cursor to the beginning of the line, as a new line starts now:
-					self.cursor.to_line_beginning();
-					
-					//Go to next line:
+					if !self.memory.cursor_at_end() {
+						self.clear_from_cursor(letter_instructions);
+						self.clear_below_cursor(letter_instructions);
+					}
+					//Move cursor to the start of the next line:
 					self.cursor.to_next_line();
+					self.cursor.to_line_beginning();
 				}
-				
-				//Clear everything after the cursor:
-				self.clear_from_cursor(letter_instructions);
-				self.clear_below_cursor(letter_instructions);
 				
 				if !self.memory.cursor_at_end() {
 					self.redraw_from_cursor(letter_instructions);
@@ -170,14 +200,83 @@ impl Typewriter {
 		}
 	}
 	
-	pub fn dump_debug(&self) {
-		println!("Status:");
-		println!(" Mem: {} - {}", self.memory.pointer_before_cursor, self.memory.pointer_after_cursor);
-		println!(" Cur: {} {}", self.cursor.x, self.cursor.y);
+	///Moves cursor back, handling edge cases & redrawing. AFTER the memory-cursor has already been moved.
+	fn move_cursor_back(&mut self, letter_instructions: &mut Vec<LetterInstruction>, mut must_update_after_cursor: bool) {
+		//We either pressed Backspace or Arrow-Left.
+		//The cursor moved from second or first column one slot backwards. Both cases have edge cases.
+		
+		if self.cursor.x <= 1 {
+			let mut go_line_up = false;
+			if self.cursor.x == 0 {
+				//We are either at the beginning of the document, or we can expect to delete a newline.
+				assert_false!(self.memory.memory[self.memory.pointer_before_cursor] != NEWLINE, "VIOLATION/CORRUPTION: Attempted to move cursor back, while in first column, but the character was not a newline!");
+				
+				//When at the beginning and in first column, the cursor was moved from the second line/row to the first (empty) line/row:
+				if self.memory.cursor_at_beginning() {
+					self.cursor.y = 0;
+				} else {
+					//Else we have to set the cursor horizontally to match the previous line:
+					self.cursor.x = self.find_line_end();
+					go_line_up = true;
+				}
+			} else {
+				//We can either remove the first letter of a line, or remove a letter wrapping to the previous line.
+				
+				//If we removed a NEWLINE, data is corrupted or the cursor was at the wrong position.
+				assert_false!(self.memory.memory[self.memory.pointer_before_cursor] == NEWLINE, "VIOLATION/CORRUPTION: Attempted to move cursor back, while in second column, but the character was a newline!");
+				
+				//We removed a letter. Next check if we are in a wrapped or empty line:
+				if self.memory.cursor_at_beginning() || self.memory.memory[self.memory.pointer_before_cursor - 1] == NEWLINE {
+					//(Now) empty line (before cursor), we set and allow first cursor column, as this is a line start:
+					self.cursor.x = 0;
+				} else {
+					//A wrapped line, in this case we have to move the cursor to the very last position in the previous line.
+					self.cursor.x = CHAR_WIDTH;
+					go_line_up = true;
+				}
+			}
+			//Both above cursor position cases can result into moving the cursor into one line above, both handling are identical, thus take care of them here:
+			if go_line_up {
+				//Differentiate between first and other line:
+				if self.cursor.is_first_line() {
+					//In the first line, we need to redraw the canvas:
+					self.clear_to_cursor(letter_instructions);
+					self.redraw_before_cursor_top_line(letter_instructions);
+					//Also redraw anything after the cursor:
+					must_update_after_cursor = true;
+				} else {
+					//Else just move the cursor up to the previous line:
+					self.cursor.to_previous_line();
+				}
+			}
+		} else {
+			assert_false!(self.memory.cursor_at_beginning(), "VIOLATION: Attempted to move cursor one column back, while not in first column, but memory is empty!");
+			assert_false!(self.memory.memory[self.memory.pointer_before_cursor] == NEWLINE, "VIOLATION/CORRUPTION: Attempted to move cursor back, while not in first column, but the character was a newline!");
+			
+			//We are somewhere within a line and can simply decrement the cursor without fear.
+			self.cursor.decrement();
+		}
+		
+		//If we deleted a character or moved the cursor into the previous line, we have to redraw everything after the cursor:
+		if must_update_after_cursor && !self.memory.cursor_at_end() {
+			self.clear_from_cursor(letter_instructions);
+			self.clear_below_cursor(letter_instructions);
+			self.redraw_from_cursor(letter_instructions);
+		}
 	}
 	
 	fn clear_from_cursor(&self, letter_instructions: &mut Vec<LetterInstruction>) {
 		for x in self.cursor.x..CHAR_WIDTH {
+			letter_instructions.push(LetterInstruction {
+				pos_x: x,
+				pos_y: self.cursor.y,
+				id: 0,
+			});
+		}
+	}
+	
+	fn clear_to_cursor(&self, letter_instructions: &mut Vec<LetterInstruction>) {
+		for x in 0..=self.cursor.x {
 			letter_instructions.push(LetterInstruction {
 				pos_x: x,
 				pos_y: self.cursor.y,
@@ -212,28 +311,36 @@ impl Typewriter {
 	
 	fn update_line_cache(&mut self) {
 		let mut mem_index = self.memory.pointer_before_cursor - 1;
+		if mem_index == 0 {
+			//This should never happen, handle it anyway:
+			self.line_cache[0] = 0;
+			return;
+		}
 		let mut line_index = 0;
 		let mut counter = 0;
 		let mut visible_lines = 0;
 		
-		println!("Building line cache:");
+		// println!("Building line cache:");
 		loop {
 			let value = self.memory.memory[mem_index];
 			// println!(":: {}", value);
+			if value != NEWLINE {
+				counter += 1;
+				if counter > CHAR_WIDTH {
+					// println!("- WRAP.");
+					counter = 1;
+					visible_lines += 1;
+				}
+			}
+			
 			if value == NEWLINE || mem_index == 0 {
 				self.line_cache[line_index] = counter;
-				println!("- {}: {}", line_index, counter);
+				// println!("- {}: {}", line_index, counter);
 				counter = 0;
 				line_index += 1;
 				visible_lines += 1;
 				if visible_lines >= CHAR_HEIGHT {
 					break;
-				}
-			} else {
-				counter += 1;
-				if counter == CHAR_WIDTH {
-					counter = 0;
-					visible_lines += 1;
 				}
 			}
 			
@@ -244,10 +351,12 @@ impl Typewriter {
 		}
 	}
 	
+	///Returns the cursor position for the line before the cursor.
 	fn find_line_end(&self) -> usize {
 		let mem = &self.memory;
 		let mut counter = 0;
 		let mut index = mem.pointer_before_cursor;
+		//TODO: How does this handle a single letter on screen? RIP.
 		while index != 0 {
 			index -= 1;
 			
@@ -257,75 +366,82 @@ impl Typewriter {
 			}
 			
 			counter += 1;
-			if counter == CHAR_WIDTH {
-				counter = 0;
+			if counter > CHAR_WIDTH {
+				counter = 1;
 			}
 		}
 		counter
 	}
 	
+	//Will redraw only the top line, ignoring all constrains. Assumes a valid state where there is enough to draw without newlines, ignoring correct line offset.
 	//Call-Requirement:
-	// Pointer must not be at beginning of memory!
-	// Cursor should be at beginning of the line? Or not?
-	// Cursor must not be in first line.
-	fn redraw_before_cursor(&mut self, letter_instructions: &mut Vec<LetterInstruction>) {
-		println!("Readrawing!");
+	// - Cursor X position must be correct.
+	fn redraw_before_cursor_top_line(&mut self, letter_instructions: &mut Vec<LetterInstruction>) {
+		// println!("Redrawing top line!");
 		self.cursor.backup();
-		// self.cursor.to_previous_line();
+		
+		let mut pointer = self.memory.pointer_before_cursor - 1; //Get the stack (value) position
+		
+		loop {
+			if self.cursor.is_at_line_start() {
+				break;
+			}
+			self.cursor.decrement_slot();
+			self.write_letter_by_id(letter_instructions, self.memory.memory[pointer]);
+			pointer -= 1;
+		}
+		
+		self.cursor.restore();
+	}
+	
+	//Call-Requirement:
+	// - Pointer must not be at beginning of memory!
+	// - Cursor must not be at canvas start!
+	fn redraw_before_cursor(&mut self, letter_instructions: &mut Vec<LetterInstruction>) {
+		// println!("Redrawing before cursor!");
+		self.cursor.backup();
 		
 		let mut line_index = 0;
 		
-		let cache_number = self.line_cache[line_index];
-		let cache_number_off = (if cache_number == 0 { CHAR_WIDTH } else { cache_number }) - 1; //Correct the X position - required or not.
-		if cache_number != self.cursor.x {
-			println!("Ehm, by design line cache should end at cursor position, it was off though. Cursor {}, cache {}, off {}.", self.cursor.x, cache_number, cache_number_off);
-			self.cursor.x = cache_number_off;
-		}
+		let new_cursor_position = self.line_cache[line_index];
+		//The new cursor position needs to be subtracted by 1, to have the first letter drawing position. To prevent overflow, handle 0 first.
+		self.cursor.x = (if new_cursor_position == 0 { CHAR_WIDTH } else { new_cursor_position }) - 1;
 		
-		// Set the cursor position to where ???
+		let mut pointer = self.memory.pointer_before_cursor - 1; //Get the stack (value) position
 		
-		if self.line_cache[line_index] == 0 {
-			// Need to go back 1 horizontal line (if possible):
-			if self.cursor.is_first_line() {
-				self.cursor.restore();
-				return;
-			}
-			self.cursor.to_previous_line();
-		}
-		println!("> Cur-Pos: {}", self.cursor.x);
-		
-		let mut pointer = self.memory.pointer_before_cursor; //Get the stack position
-		pointer -= 1; //But decrement it once, as the value is relevant
-		
+		let mut just_had_line_wrap = false;
 		loop {
 			let value = self.memory.memory[pointer];
 			if value == NEWLINE {
 				//Encountered newline.
-				println!("> NL");
+				// println!("> NL");
 				line_index += 1;
 				if line_index == CHAR_HEIGHT {
-					println!(">> Last line.");
+					// println!(">> Last line: {}", line_index);
 					break; //Drawn last line already.
 				}
 				//Move cursor:
-				if !self.cursor.is_at_line_end() {
+				if !just_had_line_wrap {
 					if self.cursor.is_first_line() {
-						println!(">> Cursor first line.");
+						// println!(">> Cursor first line.");
 						break; //Already at top line.
 					}
 					self.cursor.to_previous_line();
 				}
+				just_had_line_wrap = false;
 				self.cursor.x = self.line_cache[line_index] - 1;
 			} else {
-				println!("> L: {}", value);
+				// println!("> L: {}", value);
 				// self.write_space(letter_instructions);
 				self.write_letter_by_id(letter_instructions, value);
 				//Move cursor:
-				if self.cursor.is_at_start() {
-					println!(">> Cursor at start.");
+				if self.cursor.is_at_canvas_start() {
+					// println!(">> Cursor at start.");
 					break; //Drawn everything that fits
 				}
-				self.cursor.decrement();
+				
+				just_had_line_wrap = self.cursor.x < 1;
+				self.cursor.decrement_slot();
 			}
 			
 			if pointer == 0 {
@@ -335,8 +451,11 @@ impl Typewriter {
 		}
 		
 		self.cursor.restore();
+		self.cursor.x = new_cursor_position;
 	}
 	
+	//Call-Requirement:
+	// - Memory-Cursor must not be at the end of memory.
 	fn redraw_from_cursor(&mut self, letter_instructions: &mut Vec<LetterInstruction>) {
 		self.cursor.backup();
 		
@@ -344,22 +463,25 @@ impl Typewriter {
 		let mut pointer = self.memory.pointer_after_cursor;
 		pointer += 1; //Jump to the first value instead of the free slot.
 		
-		//First clear up the first slot, as that is done a cycle before the actual drawing:
-		// self.write_space(letter_instructions);
-		
 		loop {
 			//Get value from after-caret stack:
 			let value = self.memory.memory[pointer];
-			//Draw that symbol, but first clear the area:
-			self.write_letter_by_id(letter_instructions, value);
-			
-			if self.cursor.is_at_end() {
-				break; //Reached the end of display, no space to draw more.
+			if value == NEWLINE {
+				if self.cursor.is_last_line() {
+					break;
+				}
+				self.cursor.to_next_line();
+				self.cursor.to_line_beginning();
+			} else {
+				//Draw that symbol, but first clear the area:
+				self.write_letter_by_id(letter_instructions, value);
+				
+				if self.cursor.is_last_line() && self.cursor.is_at_line_end() {
+					break; //Reached the end of display, no space to draw more.
+				}
+				//Advance to the next position on the display:
+				self.cursor.increment();
 			}
-			//Advance to the next position on the display:
-			self.cursor.increment();
-			//We got more things to write, clear up the next (or last) slot:
-			// self.write_space(letter_instructions);
 			
 			if pointer == (self.memory.memory.len() - 1) {
 				break; //Reached end of memory, nothing more to draw.
@@ -380,9 +502,10 @@ impl Typewriter {
 	}
 	
 	fn write_letter_by_id(&self, letter_instructions: &mut Vec<LetterInstruction>, letter_id: u8) {
+		let (x, y) = self.cursor.get_draw_letter_position();
 		letter_instructions.push(LetterInstruction {
-			pos_x: self.cursor.x,
-			pos_y: self.cursor.y,
+			pos_x: x,
+			pos_y: y,
 			id: letter_id,
 		});
 	}

@@ -1,8 +1,8 @@
 //Stuff to change, enjoy:
 pub const TARGET_DISPLAY : u32 = 1;
-pub const PIXEL_SIDE: u32 = 8; //8
-pub const CHAR_WIDTH: usize = 5; //42
-pub const CHAR_HEIGHT: usize = 5; //10
+pub const PIXEL_SIDE: u32 = 6; //8
+pub const CHAR_WIDTH: usize = 42; //42
+pub const CHAR_HEIGHT: usize = 10; //10
 pub const MEMORY_SIZE : usize = 0x1000;
 
 //Adjust if needed...
